@@ -1853,38 +1853,99 @@
                 this.dbName = 'ExpenseTrackerDB';
                 this.dbVersion = 1;
                 this.db = null;
+                this.fallbackData = null;
                 this.dbInitPromise = this.initDB().catch(err => {
                     console.error('Database initialization failed in constructor:', err);
+                    this.useFallbackStorage();
                 });
+            }
+
+            // Use fallback storage when IndexedDB is not available
+            useFallbackStorage() {
+                console.log('Using fallback in-memory storage');
+                this.fallbackData = {
+                    expenses: [],
+                    budgetGoals: []
+                };
+
+                // Add some sample data for GitHub sandbox preview
+                this.addSampleData();
+            }
+
+            // Add sample data for preview purposes
+            addSampleData() {
+                // Sample expenses
+                const sampleExpenses = [
+                    { id: '1', amount: 2500, description: 'Monthly Rent', category: 'housing', date: '2023-06-01' },
+                    { id: '2', amount: 1200, description: 'Grocery Shopping', category: 'food', date: '2023-06-05' },
+                    { id: '3', amount: 800, description: 'Electricity Bill', category: 'utilities', date: '2023-06-10' },
+                    { id: '4', amount: 1500, description: 'New Headphones', category: 'shopping', date: '2023-06-15' },
+                    { id: '5', amount: 500, description: 'Movie Night', category: 'entertainment', date: '2023-06-20' },
+                    { id: '6', amount: 1000, description: 'Doctor Visit', category: 'healthcare', date: '2023-06-25' }
+                ];
+
+                // Sample budget goals
+                const sampleBudgetGoals = [
+                    { id: '1', category: 'food', amount: 5000 },
+                    { id: '2', category: 'housing', amount: 10000 },
+                    { id: '3', category: 'entertainment', amount: 2000 },
+                    { id: '4', category: 'utilities', amount: 3000 }
+                ];
+
+                this.fallbackData.expenses = sampleExpenses;
+                this.fallbackData.budgetGoals = sampleBudgetGoals;
             }
 
             // Initialize the database
             async initDB() {
                 return new Promise((resolve, reject) => {
-                    const request = indexedDB.open(this.dbName, this.dbVersion);
+                    try {
+                        // Check if we're in GitHub sandbox environment
+                        if (window.location.hostname.includes('github') ||
+                            window.location.hostname.includes('githubusercontent')) {
+                            console.log('Detected GitHub sandbox environment, using fallback storage');
+                            this.useFallbackStorage();
+                            return resolve();
+                        }
 
-                    request.onerror = (event) => {
-                        console.error('Error opening IndexedDB:', event);
-                        reject(new Error('Could not open IndexedDB'));
-                    };
+                        // Check if IndexedDB is available
+                        if (!window.indexedDB) {
+                            console.warn('IndexedDB not available, using fallback data storage');
+                            this.useFallbackStorage();
+                            return resolve();
+                        }
 
-                    request.onsuccess = (event) => {
-                        this.db = event.target.result;
+                        const request = indexedDB.open(this.dbName, this.dbVersion);
+
+                        request.onerror = (event) => {
+                            console.error('Error opening IndexedDB:', event);
+                            console.warn('Using fallback data storage');
+                            this.useFallbackStorage();
+                            resolve();
+                        };
+
+                        request.onsuccess = (event) => {
+                            this.db = event.target.result;
+                            resolve();
+                        };
+
+                        request.onupgradeneeded = (event) => {
+                            const db = event.target.result;
+
+                            // Create object stores if they don't exist
+                            if (!db.objectStoreNames.contains('expenses')) {
+                                db.createObjectStore('expenses', { keyPath: 'id' });
+                            }
+
+                            if (!db.objectStoreNames.contains('budgetGoals')) {
+                                db.createObjectStore('budgetGoals', { keyPath: 'id' });
+                            }
+                        };
+                    } catch (error) {
+                        console.error('Critical error initializing database:', error);
+                        this.useFallbackStorage();
                         resolve();
-                    };
-
-                    request.onupgradeneeded = (event) => {
-                        const db = event.target.result;
-
-                        // Create object stores if they don't exist
-                        if (!db.objectStoreNames.contains('expenses')) {
-                            db.createObjectStore('expenses', { keyPath: 'id' });
-                        }
-
-                        if (!db.objectStoreNames.contains('budgetGoals')) {
-                            db.createObjectStore('budgetGoals', { keyPath: 'id' });
-                        }
-                    };
+                    }
                 });
             }
 
@@ -2046,30 +2107,35 @@
             // Wait for the database to be initialized
             async waitForDB() {
                 try {
+                    // If we already have fallback data, no need to wait for DB
+                    if (this.fallbackData) {
+                        return;
+                    }
+
                     // Wait for the initialization promise to complete
                     await this.dbInitPromise;
 
                     // If db is still null after initialization, try one more time
-                    if (!this.db) {
+                    if (!this.db && !this.fallbackData) {
                         console.warn('Database not initialized after initial attempt, trying again...');
                         await this.initDB();
                     }
 
                     // If still null, create a fallback in-memory database
-                    if (!this.db) {
+                    if (!this.db && !this.fallbackData) {
                         console.warn('Creating fallback in-memory database');
-                        this.createFallbackDB();
+                        this.useFallbackStorage();
                     }
                 } catch (error) {
                     console.error('Failed to initialize database:', error);
                     if (typeof Utils !== 'undefined') {
                         Utils.showToast('Database initialization failed. Using fallback storage.', 'error');
                     }
-                    this.createFallbackDB();
+                    this.useFallbackStorage();
                 }
 
                 // Final check
-                if (!this.db) {
+                if (!this.db && !this.fallbackData) {
                     console.error('Database is still not available after all attempts');
                     throw new Error('Database is not available');
                 }
@@ -2244,29 +2310,42 @@
             async clearAllData() {
                 await this.waitForDB();
 
+                // Check if we're using the fallback database
+                if (this.fallbackData) {
+                    console.log('Clearing fallback data');
+                    this.fallbackData.expenses = [];
+                    this.fallbackData.budgetGoals = [];
+                    return true;
+                }
+
                 return new Promise((resolve, reject) => {
-                    const transaction = this.db.transaction(['expenses', 'budgetGoals'], 'readwrite');
-                    const expensesStore = transaction.objectStore('expenses');
-                    const budgetGoalsStore = transaction.objectStore('budgetGoals');
+                    try {
+                        const transaction = this.db.transaction(['expenses', 'budgetGoals'], 'readwrite');
+                        const expensesStore = transaction.objectStore('expenses');
+                        const budgetGoalsStore = transaction.objectStore('budgetGoals');
 
-                    const clearExpenses = expensesStore.clear();
-                    const clearBudgetGoals = budgetGoalsStore.clear();
+                        const clearExpenses = expensesStore.clear();
+                        const clearBudgetGoals = budgetGoalsStore.clear();
 
-                    clearExpenses.onsuccess = () => {
-                        clearBudgetGoals.onsuccess = () => {
-                            resolve(true);
+                        clearExpenses.onsuccess = () => {
+                            clearBudgetGoals.onsuccess = () => {
+                                resolve(true);
+                            };
+
+                            clearBudgetGoals.onerror = (event) => {
+                                console.error('Error clearing budget goals:', event);
+                                reject(new Error('Could not clear budget goals'));
+                            };
                         };
 
-                        clearBudgetGoals.onerror = (event) => {
-                            console.error('Error clearing budget goals:', event);
-                            reject(new Error('Could not clear budget goals'));
+                        clearExpenses.onerror = (event) => {
+                            console.error('Error clearing expenses:', event);
+                            reject(new Error('Could not clear expenses'));
                         };
-                    };
-
-                    clearExpenses.onerror = (event) => {
-                        console.error('Error clearing expenses:', event);
-                        reject(new Error('Could not clear expenses'));
-                    };
+                    } catch (error) {
+                        console.error('Error in clearAllData transaction:', error);
+                        reject(error);
+                    }
                 });
             }
         }
@@ -3784,9 +3863,24 @@
 
         // Initialize the application when the DOM is loaded
         document.addEventListener('DOMContentLoaded', () => {
-            const app = new App();
-            // Make app available globally for debugging
-            window.app = app;
+            try {
+                const app = new App();
+                // Make app available globally for debugging
+                window.app = app;
+
+                // Add a message for GitHub sandbox users
+                if (window.location.hostname.includes('github') ||
+                    window.location.hostname.includes('githubusercontent')) {
+                    Utils.showToast('Running in preview mode with sample data', 'info');
+                }
+            } catch (error) {
+                console.error('Error initializing app:', error);
+                document.body.innerHTML += `<div style="padding: 20px; background-color: #f8d7da; color: #721c24; margin: 20px;">
+                    <h3>Error Initializing Application</h3>
+                    <p>${error.message}</p>
+                    <p>Please try refreshing the page or check the console for more details.</p>
+                </div>`;
+            }
         });
     </script>
 </body>
